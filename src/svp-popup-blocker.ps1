@@ -29,7 +29,11 @@
     window is the single PostMessage(WM_CLOSE) guarded by that exact
     title match.
 
-    A tray icon shows it's alive. Right-click it for:
+    A tray icon shows it's alive: blue with a checkmark while active,
+    gray with pause bars while paused, red with an X if it failed to
+    start. Right-click it for:
+     - A live count of popups blocked this session.
+     - "Open Log" - opens the log file.
      - "Enabled" checkbox - pauses/resumes blocking without exiting.
      - "Exit" - stops this instance (restarts automatically next login).
     A balloon notification fires each time a popup is blocked, and a
@@ -72,32 +76,105 @@ public class SvpHook {
 }
 "@
 
-$logPath = Join-Path $PSScriptRoot "svp-popup-blocker.log"
+$AppVersion = "1.2.0"
+
+# $PSScriptRoot is empty inside a ps2exe-compiled binary, because the
+# script runs as an embedded, dynamically-hosted script block rather than
+# actual IL in the exe's own assembly (so GetExecutingAssembly().Location
+# doesn't point at the exe either - it resolves to an internal dynamic
+# assembly with no meaningful path). The one thing that reliably points
+# at the real running exe in that case is the current process itself.
+if ($PSScriptRoot) {
+    $scriptDir = $PSScriptRoot
+} else {
+    $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+}
+
+$logPath = Join-Path $scriptDir "svp-popup-blocker.log"
 function Log($msg) {
     "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $msg" | Out-File -FilePath $logPath -Append -Encoding utf8
 }
 
-# --- Tray icon ---------------------------------------------------------
+# --- Icon -----------------------------------------------------------------
+
+# Drawn at runtime so the tray icon always looks the same regardless of
+# whether SVP happens to be installed on this machine.
+function New-ShieldIcon([System.Drawing.Color]$Color, [string]$Glyph) {
+    $bmp = New-Object System.Drawing.Bitmap 32, 32
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear([System.Drawing.Color]::Transparent)
+
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    [System.Drawing.Point[]]$pts = @(
+        [System.Drawing.Point]::new(16, 1),
+        [System.Drawing.Point]::new(30, 7),
+        [System.Drawing.Point]::new(30, 16),
+        [System.Drawing.Point]::new(16, 31),
+        [System.Drawing.Point]::new(2, 16),
+        [System.Drawing.Point]::new(2, 7)
+    )
+    $path.AddPolygon($pts)
+    $brush = New-Object System.Drawing.SolidBrush $Color
+    $g.FillPath($brush, $path)
+    $pen = New-Object System.Drawing.Pen(([System.Drawing.Color]::FromArgb(60, 0, 0, 0)), 1.5)
+    $g.DrawPath($pen, $path)
+
+    $glyphPen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 3)
+    $glyphPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $glyphPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    switch ($Glyph) {
+        "check" {
+            [System.Drawing.Point[]]$checkPts = @(
+                [System.Drawing.Point]::new(9, 16),
+                [System.Drawing.Point]::new(14, 22),
+                [System.Drawing.Point]::new(23, 10)
+            )
+            $g.DrawLines($glyphPen, $checkPts)
+        }
+        "pause" {
+            $g.DrawLine($glyphPen, 12, 10, 12, 22)
+            $g.DrawLine($glyphPen, 20, 10, 20, 22)
+        }
+        "x" {
+            $g.DrawLine($glyphPen, 10, 10, 22, 22)
+            $g.DrawLine($glyphPen, 22, 10, 10, 22)
+        }
+    }
+
+    $hIcon = $bmp.GetHicon()
+    return [System.Drawing.Icon]::FromHandle($hIcon)
+}
+
+$ColorActive = [System.Drawing.Color]::FromArgb(41, 128, 185)
+$ColorPaused = [System.Drawing.Color]::FromArgb(127, 140, 141)
+$ColorFailed = [System.Drawing.Color]::FromArgb(192, 57, 43)
+
+# --- Tray icon --------------------------------------------------------
 
 $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-try {
-    $svpExe = "C:\Program Files\SVP 4\SVPManagerLauncher.exe"
-    $notifyIcon.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($svpExe)
-} catch {
-    $notifyIcon.Icon = [System.Drawing.SystemIcons]::Shield
-}
+$notifyIcon.Icon = New-ShieldIcon $ColorActive "check"
 $notifyIcon.Text = "SVP Popup Blocker (active)"
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$statusItem = New-Object System.Windows.Forms.ToolStripMenuItem "SVP Popup Blocker"
-$statusItem.Enabled = $false
-$menu.Items.Add($statusItem) | Out-Null
+
+$titleItem = New-Object System.Windows.Forms.ToolStripMenuItem "SVP Popup Blocker v$AppVersion"
+$titleItem.Enabled = $false
+$titleItem.Font = New-Object System.Drawing.Font($titleItem.Font, [System.Drawing.FontStyle]::Bold)
+$menu.Items.Add($titleItem) | Out-Null
+
+$counterItem = New-Object System.Windows.Forms.ToolStripMenuItem "Blocked this session: 0"
+$counterItem.Enabled = $false
+$menu.Items.Add($counterItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 $enabledItem = New-Object System.Windows.Forms.ToolStripMenuItem "Enabled"
 $enabledItem.CheckOnClick = $true
 $enabledItem.Checked = $true
 $menu.Items.Add($enabledItem) | Out-Null
+
+$logItem = New-Object System.Windows.Forms.ToolStripMenuItem "Open Log"
+$menu.Items.Add($logItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem "Exit"
@@ -107,10 +184,25 @@ $notifyIcon.ContextMenuStrip = $menu
 $notifyIcon.Visible = $true
 
 $script:enabled = $true
+$script:blockedCount = 0
+
 $enabledItem.add_CheckedChanged({
     $script:enabled = $enabledItem.Checked
-    $notifyIcon.Text = if ($script:enabled) { "SVP Popup Blocker (active)" } else { "SVP Popup Blocker (paused)" }
+    if ($script:enabled) {
+        $notifyIcon.Icon = New-ShieldIcon $ColorActive "check"
+        $notifyIcon.Text = "SVP Popup Blocker (active)"
+    } else {
+        $notifyIcon.Icon = New-ShieldIcon $ColorPaused "pause"
+        $notifyIcon.Text = "SVP Popup Blocker (paused)"
+    }
     Log $(if ($script:enabled) { "Enabled via tray menu." } else { "Paused via tray menu." })
+})
+
+$logItem.add_Click({
+    if (-not (Test-Path $logPath)) {
+        "" | Out-File -FilePath $logPath -Encoding utf8
+    }
+    Start-Process notepad.exe -ArgumentList "`"$logPath`""
 })
 
 $exitItem.add_Click({
@@ -162,6 +254,8 @@ $script:callback = [SvpHook+WinEventDelegate]{
         Notify "SVP Popup Blocker" "Couldn't auto-close the activation popup - you may need to dismiss it manually." ([System.Windows.Forms.ToolTipIcon]::Warning)
     } else {
         Log "Closed activation dialog (hwnd=$hwnd)."
+        $script:blockedCount++
+        $counterItem.Text = "Blocked this session: $script:blockedCount"
         Notify "SVP Popup Blocker" "Blocked an SVP activation popup." ([System.Windows.Forms.ToolTipIcon]::Info)
     }
 }
@@ -180,7 +274,7 @@ $script:hook = [SvpHook]::SetWinEventHook(
 
 if ($script:hook -eq [IntPtr]::Zero) {
     Log "ERROR: SetWinEventHook failed."
-    $notifyIcon.Icon = [System.Drawing.SystemIcons]::Error
+    $notifyIcon.Icon = New-ShieldIcon $ColorFailed "x"
     $notifyIcon.Text = "SVP Popup Blocker (FAILED TO START)"
     $enabledItem.Enabled = $false
     Notify "SVP Popup Blocker" "Failed to start - popup blocking is NOT active. Try Exit and restart from Task Scheduler." ([System.Windows.Forms.ToolTipIcon]::Error)
