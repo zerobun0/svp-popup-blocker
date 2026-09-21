@@ -16,7 +16,7 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 Import-Module ps2exe
 Add-Type -AssemblyName System.Drawing
 
-$AppVersion = "1.2.0"
+$AppVersion = "1.3.0"
 $srcPath = Join-Path $PSScriptRoot "src\svp-popup-blocker.ps1"
 $distDir = Join-Path $PSScriptRoot "dist"
 $outPath = Join-Path $distDir "SvpPopupBlocker.exe"

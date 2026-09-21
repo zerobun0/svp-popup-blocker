@@ -14,35 +14,31 @@ to playback.
 ## Download
 
 Grab `SvpPopupBlocker.exe` from the
-[latest release](https://github.com/zerobun0/svp-popup-blocker/releases/latest),
-put it in its own folder along with `install.ps1`, then run:
+[latest release](https://github.com/zerobun0/svp-popup-blocker/releases/latest)
+and run it. That's the whole install: on first run it copies itself to
+`%LOCALAPPDATA%\SvpPopupBlocker\` and registers itself to launch
+automatically at every login. No separate installer, no script to run
+first.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
+To remove it, right-click its tray icon and choose `Uninstall`.
 
-It copies itself to `%LOCALAPPDATA%\SvpPopupBlocker\`, starts immediately,
-and registers itself to launch automatically at every login.
+## Where the UI is
 
-To remove it:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
-```
-
-## What it looks like
-
-A shield icon sits in the system tray the whole time it's running: blue
-with a checkmark while active, gray with pause bars if you pause it, red
-with an X if it failed to start. Right-click it for:
+This has no window. Look in the system tray (bottom-right of the
+taskbar, next to the clock) for a small blue shield icon - it may be
+hidden under the `^` "show hidden icons" arrow the first time. Right-click
+it for the menu:
 
 - A live count of popups blocked this session
 - `Open Log`
 - `Enabled` checkbox, to pause/resume without exiting
+- `Uninstall`
 - `Exit`
 
-A notification balloon fires each time it blocks a popup, and a warning
-balloon fires if a close attempt ever fails.
+The icon itself tells you the state at a glance: blue with a checkmark
+while active, gray with pause bars if you pause it, red with an X if it
+failed to start. A notification balloon fires each time it blocks a
+popup, and a warning balloon fires if a close attempt ever fails.
 
 ## How it works
 
@@ -68,6 +64,9 @@ balloon fires if a close attempt ever fails.
   terminal application" feature only intercepts new console windows, so
   it never applies here, meaning no Windows Terminal tab, flash or
   otherwise, at any point, including at login.
+- A named mutex guarantees only one instance runs at a time, so launching
+  the exe again while it's already running just exits quietly instead of
+  creating a second tray icon.
 - Runs via a hidden Scheduled Task triggered at logon.
 
 ## Building from source
@@ -85,10 +84,8 @@ Produces `dist\SvpPopupBlocker.exe` from `src\svp-popup-blocker.ps1`.
 
 | Path | Purpose |
 |---|---|
-| `src/svp-popup-blocker.ps1` | source script |
+| `src/svp-popup-blocker.ps1` | source script (install/uninstall logic included) |
 | `build.ps1` | compiles src into `dist/SvpPopupBlocker.exe` |
-| `install.ps1` | installs the exe and registers the scheduled task |
-| `uninstall.ps1` | removes both, and the installed copy |
 
 ## Requirements
 

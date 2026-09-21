@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Instantly closes SVP4's "SVP - Activation" nag dialog without touching
-    SVP itself, with a system tray icon to show it's running.
+    SVP itself. Installs and uninstalls itself; no separate scripts.
 
 .DESCRIPTION
     SVP (SmoothVideo Project) periodically shows an "Activation" dialog
@@ -29,18 +29,22 @@
     window is the single PostMessage(WM_CLOSE) guarded by that exact
     title match.
 
-    A tray icon shows it's alive: blue with a checkmark while active,
-    gray with pause bars while paused, red with an X if it failed to
-    start. Right-click it for:
+    The UI is a system tray icon (bottom-right of the taskbar, possibly
+    under the "show hidden icons" arrow): blue with a checkmark while
+    active, gray with pause bars while paused, red with an X if it failed
+    to start. Right-click it for:
      - A live count of popups blocked this session.
      - "Open Log" - opens the log file.
      - "Enabled" checkbox - pauses/resumes blocking without exiting.
+     - "Uninstall" - removes the scheduled task and the installed copy.
      - "Exit" - stops this instance (restarts automatically next login).
     A balloon notification fires each time a popup is blocked, and a
     warning notification fires if closing it ever fails.
 
-.NOTES
-    Run install.ps1 to have this start automatically at login.
+    On first run from anywhere (e.g. a freshly downloaded exe sitting in
+    Downloads), it copies itself to %LOCALAPPDATA%\SvpPopupBlocker\ and
+    registers a hidden Scheduled Task pointing there, so it starts
+    automatically at every login. No install.ps1/uninstall.ps1 needed.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -76,7 +80,16 @@ public class SvpHook {
 }
 "@
 
-$AppVersion = "1.2.0"
+$AppVersion = "1.3.0"
+$TaskName = "SVP Popup Blocker"
+
+# Only one instance should ever run at once, so a stray second launch (or
+# the freshly-copied installed exe versus the one the user double-clicked)
+# doesn't create two tray icons both fighting over the same dialog.
+$mutex = New-Object System.Threading.Mutex($false, "SvpPopupBlockerSingleInstance")
+if (-not $mutex.WaitOne(0, $false)) {
+    exit 0
+}
 
 # $PSScriptRoot is empty inside a ps2exe-compiled binary, because the
 # script runs as an embedded, dynamically-hosted script block rather than
@@ -84,10 +97,11 @@ $AppVersion = "1.2.0"
 # doesn't point at the exe either - it resolves to an internal dynamic
 # assembly with no meaningful path). The one thing that reliably points
 # at the real running exe in that case is the current process itself.
+$currentExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 if ($PSScriptRoot) {
     $scriptDir = $PSScriptRoot
 } else {
-    $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+    $scriptDir = Split-Path -Parent $currentExe
 }
 
 $logPath = Join-Path $scriptDir "svp-popup-blocker.log"
@@ -95,10 +109,40 @@ function Log($msg) {
     "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $msg" | Out-File -FilePath $logPath -Append -Encoding utf8
 }
 
+# --- Self-install -----------------------------------------------------
+
+$installDir = Join-Path $env:LOCALAPPDATA "SvpPopupBlocker"
+$installedExe = Join-Path $installDir "SvpPopupBlocker.exe"
+$isInstalled = $currentExe -eq $installedExe
+$existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+
+if (-not $isInstalled -or -not $existingTask) {
+    try {
+        if (-not (Test-Path $installDir)) {
+            New-Item -ItemType Directory -Path $installDir | Out-Null
+        }
+        if (-not $isInstalled) {
+            Copy-Item -Path $currentExe -Destination $installedExe -Force
+            $logPath = Join-Path $installDir "svp-popup-blocker.log"
+        }
+        $action = New-ScheduledTaskAction -Execute $installedExe -WorkingDirectory $installDir
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
+            -Description "Instantly closes SVP4's activation nag dialog. Runs hidden via Task Scheduler." | Out-Null
+        Log "Installed to $installedExe and registered login task."
+        $script:justInstalled = -not $isInstalled
+    } catch {
+        Log "ERROR during self-install: $_"
+    }
+}
+
 # --- Icon -----------------------------------------------------------------
 
-# Drawn at runtime so the tray icon always looks the same regardless of
-# whether SVP happens to be installed on this machine.
+# Drawn at runtime rather than shipped as a file, so the exe stays a
+# single portable file with no loose assets.
 function New-ShieldIcon([System.Drawing.Color]$Color, [string]$Glyph) {
     $bmp = New-Object System.Drawing.Bitmap 32, 32
     $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -177,6 +221,9 @@ $logItem = New-Object System.Windows.Forms.ToolStripMenuItem "Open Log"
 $menu.Items.Add($logItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+$uninstallItem = New-Object System.Windows.Forms.ToolStripMenuItem "Uninstall"
+$menu.Items.Add($uninstallItem) | Out-Null
+
 $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem "Exit"
 $menu.Items.Add($exitItem) | Out-Null
 
@@ -185,6 +232,13 @@ $notifyIcon.Visible = $true
 
 $script:enabled = $true
 $script:blockedCount = 0
+
+if ($script:justInstalled) {
+    $notifyIcon.BalloonTipTitle = "SVP Popup Blocker"
+    $notifyIcon.BalloonTipText = "Installed. It'll start automatically every time you log in. Right-click this icon any time for options."
+    $notifyIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
+    $notifyIcon.ShowBalloonTip(6000)
+}
 
 $enabledItem.add_CheckedChanged({
     $script:enabled = $enabledItem.Checked
@@ -211,6 +265,33 @@ $exitItem.add_Click({
     $notifyIcon.Dispose()
     if ($script:hook -ne [IntPtr]::Zero) {
         [SvpHook]::UnhookWinEvent($script:hook) | Out-Null
+    }
+    [System.Windows.Forms.Application]::Exit()
+})
+
+$uninstallItem.add_Click({
+    $confirm = [System.Windows.Forms.MessageBox]::Show(
+        "Remove SVP Popup Blocker and stop it from starting at login?",
+        "Uninstall SVP Popup Blocker",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return
+    }
+    Log "Uninstalling via tray menu."
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    $notifyIcon.Visible = $false
+    $notifyIcon.Dispose()
+    if ($script:hook -ne [IntPtr]::Zero) {
+        [SvpHook]::UnhookWinEvent($script:hook) | Out-Null
+    }
+    # The running exe can't delete its own folder while its file handle is
+    # open. Hand off to a detached cmd that waits for this process to fully
+    # exit, then removes the install folder.
+    if ($isInstalled) {
+        Start-Process -FilePath "cmd.exe" `
+            -ArgumentList "/c timeout /t 2 /nobreak >nul & rmdir /s /q `"$installDir`"" `
+            -WindowStyle Hidden
     }
     [System.Windows.Forms.Application]::Exit()
 })
@@ -277,7 +358,8 @@ if ($script:hook -eq [IntPtr]::Zero) {
     $notifyIcon.Icon = New-ShieldIcon $ColorFailed "x"
     $notifyIcon.Text = "SVP Popup Blocker (FAILED TO START)"
     $enabledItem.Enabled = $false
-    Notify "SVP Popup Blocker" "Failed to start - popup blocking is NOT active. Try Exit and restart from Task Scheduler." ([System.Windows.Forms.ToolTipIcon]::Error)
+    Notify "SVP Popup Blocker" "Failed to start - popup blocking is NOT active. Try Exit and run the exe again." ([System.Windows.Forms.ToolTipIcon]::Error)
 }
 
 [System.Windows.Forms.Application]::Run()
+$mutex.ReleaseMutex()
