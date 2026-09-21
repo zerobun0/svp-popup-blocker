@@ -19,15 +19,17 @@ to playback.
   within milliseconds instead of up to a poll-interval later.
 - Closes the window with `PostMessage(WM_CLOSE)` rather than
   `SetForegroundWindow` + simulated keystrokes:
-  - `PostMessage` doesn't require focus, so it works even while a
+ - `PostMessage` doesn't require focus, so it works even while a
     fullscreen video player has focus (`SetForegroundWindow` can silently
     fail against Windows' foreground-lock protection).
-  - `WM_CLOSE` just dismisses the dialog like clicking the X, with no
+ - `WM_CLOSE` just dismisses the dialog like clicking the X, with no
     risk of accidentally triggering a "Buy" / "Evaluate" button.
 - Only ever matches the exact window title `SVP - Activation`. It doesn't
   touch, modify, or interact with SVP in any other way.
-- Runs via a hidden Scheduled Task rather than a Startup-folder shortcut,
-  so it doesn't cause a Windows Terminal tab to flash briefly at login.
+- Runs via a hidden Scheduled Task that launches a `.vbs` wrapper
+  (`wscript.exe`) rather than `powershell.exe -WindowStyle Hidden`
+  directly, so it never gets handed to Windows Terminal as a visible tab
+  - not even briefly, and not even at logon.
 
 ## Install
 
@@ -36,7 +38,7 @@ to playback.
    ```powershell
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
-3. That's it — it starts immediately and will also launch automatically
+3. That's it - it starts immediately and will also launch automatically
    every time you log in.
 
 ## Uninstall
