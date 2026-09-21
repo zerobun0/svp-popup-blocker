@@ -26,6 +26,8 @@ to playback.
     risk of accidentally triggering a "Buy" / "Evaluate" button.
 - Only ever matches the exact window title `SVP - Activation`. It doesn't
   touch, modify, or interact with SVP in any other way.
+- Runs via a hidden Scheduled Task rather than a Startup-folder shortcut,
+  so it doesn't cause a Windows Terminal tab to flash briefly at login.
 
 ## Install
 
